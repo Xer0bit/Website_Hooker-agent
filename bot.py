@@ -27,6 +27,20 @@ MAX_WEBSITES_PER_PAGE = 10
 EMBED_COLOR_SUCCESS = discord.Color.green()
 EMBED_COLOR_ERROR = discord.Color.red()
 EMBED_COLOR_INFO = discord.Color.blue()
+
+def format_timedelta(td):
+    """Convert a timedelta into a human-readable string."""
+    seconds = int(td.total_seconds())
+    if seconds < 60:
+        return f"{seconds} seconds ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minutes ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hours ago"
+    days = hours // 24
+    return f"{days} days ago"
 DEFAULT_CHECK_INTERVAL = 30  # Changed to 30 minutes default
 REPORT_HOUR = 5  # UTC time
 REPORT_COLOR = discord.Color.gold()
@@ -152,13 +166,11 @@ async def list_websites(ctx):
     def format_website(embed, website):
         latest_status = monitor.get_website_status(website['url'])
         
-        # Convert time to UTC and UTC+5
+        # Calculate time ago
         try:
-            last_check_utc = datetime.fromisoformat(website['last_check'])
-            last_check_plus5 = last_check_utc.astimezone(pytz.timezone('Asia/Karachi'))
-            time_display = (f"Last Check:\n"
-                        #   f"UTC: {last_check_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                          f"PKT: {last_check_plus5.strftime('%Y-%m-%d %H:%M:%S')} PKT")
+            last_check = datetime.fromisoformat(website['last_check'])
+            time_ago = format_timedelta(datetime.now(pytz.UTC) - last_check)
+            time_display = f"Last Check: {time_ago}"
         except Exception:
             time_display = "Last Check: Unknown"
         
@@ -243,8 +255,18 @@ async def website_status(ctx, url: str = commands.parameter(description="Website
                 dns_info = dns_info[:1021] + "..."
             embed.add_field(name="DNS Info", value=dns_info, inline=False)
             
-            # Add last check time
-            embed.add_field(name="Last Check", value=status['last_check'], inline=False)
+            # Format last check time
+            try:
+                last_check = datetime.fromisoformat(status['last_check'])
+                pk_timezone = pytz.timezone('Asia/Karachi')
+                pk_time = last_check.astimezone(pk_timezone)
+                time_ago = format_timedelta(datetime.now(pytz.UTC) - last_check)
+                time_display = (f"Pakistan Time: {pk_time.strftime('%Y-%m-%d %I:%M:%S %p PKT')}\n"
+                              f"({time_ago})")
+            except Exception:
+                time_display = "Unknown"
+            
+            embed.add_field(name="Last Check", value=time_display, inline=False)
             
             # Send the embed first
             await ctx.send(embed=embed)

@@ -1,40 +1,59 @@
 import sqlite3
-from datetime import datetime
-import json
 import os
 
 class Database:
-    def __init__(self, db_file='websites.db'):
-        self.db_file = db_file
+    def __init__(self):
+        self.data_dir = os.environ.get('DATA_DIR', 'data')  # Default to local 'data' directory
+        try:
+            if not os.path.exists(self.data_dir):
+                os.makedirs(self.data_dir, exist_ok=True)
+        except Exception as e:
+            print(f"Warning: Could not create data directory: {e}")
+            self.data_dir = '.'  # Fallback to current directory
+        
+        self.db_file = os.path.join(self.data_dir, 'websites.db')
         self._create_tables()
 
     def _create_tables(self):
         """Create necessary database tables if they don't exist"""
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS websites (
-                url TEXT PRIMARY KEY,
-                interval INTEGER,
-                last_check TEXT,
-                last_hash TEXT,
-                ip TEXT,
-                dns TEXT,
-                screenshot_path TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS admin_config (
-                admin_id TEXT PRIMARY KEY,
-                notify_on_changes BOOLEAN DEFAULT TRUE,
-                notify_on_errors BOOLEAN DEFAULT TRUE
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            
+            # Create websites table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS websites (
+                    url TEXT PRIMARY KEY,
+                    interval INTEGER,
+                    last_check TEXT,
+                    last_hash TEXT,
+                    ip TEXT,
+                    dns TEXT,
+                    screenshot_path TEXT
+                )
+            ''')
+            
+            # Create admin_config table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_config (
+                    admin_id TEXT PRIMARY KEY,
+                    notify_on_changes BOOLEAN DEFAULT TRUE,
+                    notify_on_errors BOOLEAN DEFAULT TRUE
+                )
+            ''')
+            
+            conn.commit()
+            
+        except sqlite3.Error as e:
+            print(f"SQLite error: {e}")
+            raise
+        except Exception as e:
+            print(f"Error creating tables: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
 
     def add_website(self, website_data):
         """Add a new website to the database"""

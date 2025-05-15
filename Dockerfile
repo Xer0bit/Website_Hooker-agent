@@ -29,7 +29,12 @@ RUN pip install  -r requirements.txt
 # Copy the rest of the application
 COPY . .
 
-# Create directories
-RUN mkdir -p screenshots
+# Create app directories
+RUN mkdir -p /app/data /app/screenshots /app/.wdm \
+    && chown -R 1000:1000 /app \
+    && chmod -R 755 /app
+
+# Switch to non-root user
+USER 1000:1000
 
 CMD ["python", "bot.py"]

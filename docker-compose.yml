@@ -3,10 +3,17 @@ version: '3.8'
 services:
   website-monitor:
     build: .
-    volumes:
-      - ./screenshots:/app/screenshots
-      - ./websites.db:/app/websites.db
     environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
-    restart: unless-stopped
+      - DATA_DIR=/app/data
+      - WDM_LOCAL=1
+      - WDM_CACHE_DIR=/app/.wdm
+    volumes:
+      - website_data:/app/data
+      - website_screenshots:/app/screenshots
+      - website_wdm:/app/.wdm
+    user: "1000:1000"
+
+volumes:
+  website_data:
+  website_screenshots:
+  website_wdm:
