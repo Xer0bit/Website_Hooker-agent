@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  website-monitor:
+    build: .
+    volumes:
+      - ./screenshots:/app/screenshots
+      - ./websites.db:/app/websites.db
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+    restart: unless-stopped
