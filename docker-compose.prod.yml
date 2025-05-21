@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  website-monitor:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DATA_DIR=/app/data
+      - WDM_LOCAL=1
+      - WDM_CACHE_DIR=/app/.wdm
+    volumes:
+      - ./data:/app/data
+      - ./screenshots:/app/screenshots
+      - ./logs:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M

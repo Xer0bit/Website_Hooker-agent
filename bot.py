@@ -41,13 +41,14 @@ def format_timedelta(td):
         return f"{hours} hours ago"
     days = hours // 24
     return f"{days} days ago"
-DEFAULT_CHECK_INTERVAL = 30  # Changed to 30 minutes default
+DEFAULT_CHECK_INTERVAL = 0.5  # Changed to 30 seconds default
 REPORT_HOUR = 5  # UTC time
 REPORT_COLOR = discord.Color.gold()
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
+    check_websites.change_interval(seconds=30)  # Change to 30 seconds
     check_websites.start()
     daily_report.start()  # Start the daily report task
 
@@ -93,20 +94,18 @@ async def send_paginated_embeds(ctx, title: str, items: list, formatter):
 @bot.command(name='add', help='Add a website to monitor.\nUsage: bito add <url> [check_interval_in_minutes]\nNote: Full page screenshots will be captured')
 @commands.guild_only()
 async def add_website(ctx, url: str = commands.parameter(description="Website URL to monitor"), 
-                     interval: Optional[int] = commands.parameter(default=60, description="Check interval in minutes")):
+                     interval: Optional[int] = commands.parameter(default=0.5, description="Check interval in minutes")):
     if not url:
         await ctx.send("Please provide a URL to monitor. Usage: !add <url> [check_interval_in_minutes]")
         return
     
     async with ctx.typing():
         try:
-            # Validate interval
-            if interval < 1:
-                await ctx.send("Interval must be at least 1 minute.")
-                return
-                
-            # Add website (removed await since it's no longer async)
-            status = monitor.add_website(url, interval)
+            # Perform initial thorough check
+            status = monitor.initial_check_website(url)  # New method for thorough initial check
+            
+            # Add website with specified interval
+            monitor.add_website(url, interval)
             
             # Create response embed
             embed = discord.Embed(
@@ -115,18 +114,13 @@ async def add_website(ctx, url: str = commands.parameter(description="Website UR
                 color=EMBED_COLOR_SUCCESS
             )
             embed.add_field(name="Check Interval", value=f"{interval} minutes", inline=False)
-            embed.add_field(name="Initial Status", value="Website added successfully", inline=False)
+            embed.add_field(name="Initial Status", value="✅ Initial check completed", inline=False)
+            
+            if status.get('technical_details'):
+                embed.add_field(name="Technical Details", value=status['technical_details'], inline=False)
             
             await ctx.send(embed=embed)
             
-            # Send screenshot if available
-            website_data = monitor.get_website_status(url)
-            if website_data and website_data.get('screenshot_path'):
-                await ctx.send("Current view")
-                with open(website_data['screenshot_path'], 'rb') as f:
-                    screenshot = discord.File(f)
-                    await ctx.send(file=screenshot)
-                    
         except Exception as e:
             embed = discord.Embed(
                 title="Error Adding Website",
@@ -164,127 +158,83 @@ async def list_websites(ctx):
     websites = monitor.get_all_websites()
     
     def format_website(embed, website):
-        latest_status = monitor.get_website_status(website['url'])
-        
-        # Calculate time ago
-        try:
-            last_check = datetime.fromisoformat(website['last_check'])
-            time_ago = format_timedelta(datetime.now(pytz.UTC) - last_check)
-            time_display = f"Last Check: {time_ago}"
-        except Exception:
-            time_display = "Last Check: Unknown"
-        
-        # Determine status emoji and message
-        if latest_status:
-            status_code = latest_status.get('status_code', 0)
-            response_time = latest_status.get('response_time', 0)
-            
-            if status_code in [200, 201, 202]:
-                status_indicator = "✅ Online"
-                if response_time > 5:  # High latency threshold
-                    status_indicator = "🟨 Online (High Latency)"
-            elif status_code >= 500:
-                status_indicator = "❌ Server Error"
-            elif status_code >= 400:
-                status_indicator = "⚠️ Client Error"
-            elif status_code == 0:
-                status_indicator = "⚪ No Data"
-            else:
-                status_indicator = "❓ Unknown Status"
-            
-            # Add any active issues
-            active_issues = []
-            if latest_status.get('dns_changed'):
-                active_issues.append("DNS Changed")
-            if latest_status.get('ip_changed'):
-                active_issues.append("IP Changed")
-            if latest_status.get('content_changed'):
-                active_issues.append("Content Changed")
-                
-            status_text = f"Status: {status_indicator}"
-            if active_issues:
-                status_text += f"\nActive Issues: {', '.join(active_issues)}"
-        else:
-            status_text = "Status: ⚪ No Data"
-
         embed.add_field(
-            name=website['url'],
-            value=f"{status_text}\nInterval: {website['interval']} minutes\n{time_display}",
+            name=f"🌐 {website['url']}",
+            value=f"Checking every {website['interval']} minutes",
             inline=False
         )
     
-    await send_paginated_embeds(ctx, "Monitored Websites", websites, format_website)
+    if not websites:
+        await ctx.send("No websites are currently being monitored.")
+        return
+        
+    await send_paginated_embeds(ctx, "📋 Monitored Websites", websites, format_website)
 
-@bot.command(name='status', help='Get detailed status of a specific website.\nUsage: !status <url>')
-@commands.guild_only()
-async def website_status(ctx, url: str = commands.parameter(description="Website URL to check status")):
+@bot.command(name='status')
+async def website_status(ctx, url: str):
+    """Get detailed website status with proper error handling"""
     if not url:
         await ctx.send("Please provide a URL to check. Usage: !status <url>")
         return
-    """Get detailed status of a specific website. Usage: !status [url]"""
+
+    loading_msg = await ctx.send("🔍 Checking website status...")
     try:
         status = monitor.get_website_status(url)
-        if status:
-            # Create main status embed
-            embed = discord.Embed(
-                title=f"Status for {url}",
-                color=EMBED_COLOR_SUCCESS if status.get('status_code') in [200, 201, 202] else EMBED_COLOR_ERROR
-            )
-            
-            # Add status code and response time
-            if status.get('status_code'):
-                embed.add_field(
-                    name="Status Code",
-                    value=f"{status['status_code']} ({'OK' if status['status_code'] == 200 else 'Error'})",
-                    inline=True
-                )
-            
-            if status.get('response_time'):
-                embed.add_field(
-                    name="Response Time",
-                    value=f"{status['response_time']:.2f}s",
-                    inline=True
-                )
-            
-            # Add IP information
-            embed.add_field(name="IP Address", value=status.get('ip', 'Unknown'), inline=False)
-            
-            # Add DNS information (truncated if too long)
-            dns_info = status.get('dns', 'Unknown')
-            if len(dns_info) > 1024:  # Discord's field value limit
-                dns_info = dns_info[:1021] + "..."
-            embed.add_field(name="DNS Info", value=dns_info, inline=False)
-            
-            # Format last check time
-            try:
-                last_check = datetime.fromisoformat(status['last_check'])
-                pk_timezone = pytz.timezone('Asia/Karachi')
-                pk_time = last_check.astimezone(pk_timezone)
-                time_ago = format_timedelta(datetime.now(pytz.UTC) - last_check)
-                time_display = (f"Pakistan Time: {pk_time.strftime('%Y-%m-%d %I:%M:%S %p PKT')}\n"
-                              f"({time_ago})")
-            except Exception:
-                time_display = "Unknown"
-            
-            embed.add_field(name="Last Check", value=time_display, inline=False)
-            
-            # Send the embed first
-            await ctx.send(embed=embed)
-            
-            # Then send the screenshot if it exists
-            if status['screenshot_path'] and os.path.exists(status['screenshot_path']):
-                with open(status['screenshot_path'], 'rb') as f:
-                    screenshot = discord.File(f)
-                    await ctx.send(file=screenshot)
-        else:
-            await ctx.send(f"No monitoring data found for {url}")
-    except Exception as e:
+        if not status:
+            await loading_msg.edit(content=f"❌ Website {url} is not being monitored. Use !add to start monitoring.")
+            return
+
+        # Determine embed color based on status
+        is_ok = status.get('availability', {}).get('reachable', False)
+        embed_color = EMBED_COLOR_SUCCESS if is_ok else EMBED_COLOR_ERROR
+
         embed = discord.Embed(
-            title="Error Getting Status",
+            title=f"📊 Status Report: {url}",
+            color=embed_color,
+            timestamp=datetime.now()
+        )
+
+        # Status Information
+        status_info = status.get('availability', {})
+        status_emoji = "🟢" if is_ok else "🔴"
+        embed.add_field(
+            name="Status",
+            value=f"{status_emoji} {status_info.get('status', 'Unknown')}\n"
+                  f"Response Time: {status.get('response_time', 0):.2f}s\n"
+                  f"Status Code: {status.get('status_code', 'N/A')}\n"
+                  f"Details: {status.get('technical_details', 'No details available')}",
+            inline=False
+        )
+
+        # Network Info
+        embed.add_field(
+            name="Network",
+            value=f"IP: {status.get('ip', 'Unknown')}\n"
+                  f"DNS Records:\n{status.get('dns', 'Unknown')}",
+            inline=False
+        )
+
+        # Security & Performance
+        if status.get('is_secure'):
+            embed.add_field(name="Security", value="🔒 HTTPS Enabled", inline=True)
+
+        # Add any errors or warnings
+        if status.get('error_message'):
+            embed.add_field(
+                name="⚠️ Issues",
+                value=status['error_message'],
+                inline=False
+            )
+
+        await loading_msg.edit(content=None, embed=embed)
+        
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="Error Checking Status",
             description=str(e),
             color=EMBED_COLOR_ERROR
         )
-        await ctx.send(embed=embed)
+        await loading_msg.edit(content=None, embed=error_embed)
 
 @bot.command(name='addadmin')
 @commands.has_permissions(administrator=True)
@@ -343,77 +293,48 @@ async def notify_admins(channel, message, error=False):
             mention = f"<@{admin['admin_id']}>"
             await channel.send(f"{mention} {message}")
 
-@tasks.loop(minutes=30)
+@tasks.loop(seconds=30)  # Changed from minutes=30 to seconds=30
 async def check_websites():
-    """Regular check of all websites"""
+    """Silent check of all websites with immediate alerts for anomalies"""
     channel_id = int(os.getenv('DISCORD_CHANNEL_ID'))
     channel = bot.get_channel(channel_id)
     
     if not channel:
-        print(f"Could not find notification channel with ID {channel_id}")
-        return
+        return  # Silent return if channel not found
 
     try:
         anomalies = monitor.check_all_websites()
         for anomaly in anomalies:
-            # Create detailed embed for the anomaly
-            embed = discord.Embed(
-                title="🚨 Website Monitoring Alert",
-                description=f"Issues detected with {anomaly['url']}",
-                color=EMBED_COLOR_ERROR,
-                timestamp=datetime.now()
-            )
-
-            # Add status indicators
-            status_indicators = []
-            if anomaly.get('dns_changed'):
-                status_indicators.append("🔄 DNS Changed")
-            if anomaly.get('ip_changed'):
-                status_indicators.append("🌐 IP Changed")
-            if anomaly.get('high_latency'):
-                status_indicators.append("⚡ High Latency")
-            if anomaly.get('content_changed'):
-                status_indicators.append("📝 Content Changed")
-            if anomaly.get('status_code_error'):
-                status_indicators.append("❌ Server Error")
-
-            if status_indicators:
-                embed.add_field(name="Detected Issues", value="\n".join(status_indicators), inline=False)
-
-            # Add technical details
-            if anomaly.get('technical_details'):
-                embed.add_field(name="Technical Details", value=anomaly['technical_details'], inline=False)
-
-            # Add metrics if available
-            metrics = []
-            if anomaly.get('response_time'):
-                metrics.append(f"Response Time: {anomaly['response_time']:.2f}s")
-            if anomaly.get('status_code'):
-                metrics.append(f"Status Code: {anomaly['status_code']}")
-            if metrics:
-                embed.add_field(name="Metrics", value="\n".join(metrics), inline=False)
-
-            # Send the main notification
-            await channel.send(embed=embed)
-
-            # Send screenshot if available
-            if anomaly.get('screenshot_path') and os.path.exists(anomaly['screenshot_path']):
-                await channel.send("📸 Current website state:")
-                with open(anomaly['screenshot_path'], 'rb') as f:
-                    screenshot = discord.File(f)
-                    await channel.send(file=screenshot)
-
-            # Notify admins
-            await notify_admins(channel, f"⚠️ Alert for {anomaly['url']}\nDetected issues: {', '.join(status_indicators)}")
+            if anomaly.get('critical_changes', False):  # Only alert for critical changes
+                embed = discord.Embed(
+                    title="🚨 Critical Website Change Detected",
+                    description=f"Important changes detected on {anomaly['url']}",
+                    color=EMBED_COLOR_ERROR,
+                    timestamp=datetime.now()
+                )
+                
+                # Add critical changes first
+                critical_issues = []
+                if anomaly.get('status_code_error'):
+                    critical_issues.append("❌ Website Down/Error")
+                if anomaly.get('dns_changed'):
+                    critical_issues.append("🔄 DNS Records Changed")
+                if anomaly.get('ip_changed'):
+                    critical_issues.append("🌐 IP Address Changed")
+                
+                if critical_issues:
+                    embed.add_field(name="Critical Issues", value="\n".join(critical_issues), inline=False)
+                    
+                if anomaly.get('technical_details'):
+                    embed.add_field(name="Technical Details", value=anomaly['technical_details'], inline=False)
+                
+                # Send alert to admins
+                await channel.send(embed=embed)
+                await notify_admins(channel, f"⚠️ Critical changes detected for {anomaly['url']}")
 
     except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ Monitoring System Error",
-            description=f"Error during website monitoring:\n```{str(e)}```",
-            color=EMBED_COLOR_ERROR
-        )
-        await channel.send(embed=error_embed)
-        await notify_admins(channel, "🔥 Monitoring system encountered an error!", error=True)
+        # Only notify admins of monitoring system errors
+        await notify_admins(channel, f"🔥 Monitoring system error: {str(e)}", error=True)
 
 async def generate_daily_report():
     """Generate a comprehensive daily report of all websites"""

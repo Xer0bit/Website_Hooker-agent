@@ -43,6 +43,19 @@ class Database:
                 )
             ''')
             
+            # Create website_checks table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS website_checks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT,
+                    timestamp TEXT,
+                    status_code INTEGER,
+                    response_time REAL,
+                    error_message TEXT,
+                    FOREIGN KEY(url) REFERENCES websites(url)
+                )
+            ''')
+            
             conn.commit()
             
         except sqlite3.Error as e:
@@ -163,3 +176,62 @@ class Database:
         admins = cursor.fetchall()
         conn.close()
         return [{'admin_id': row[0], 'notify_on_changes': row[1], 'notify_on_errors': row[2]} for row in admins]
+
+    def get_recent_checks(self, url: str, hours: int = 24):
+        """Get recent checks for a website"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        # Get checks from the last X hours
+        cursor.execute('''
+            SELECT * FROM website_checks 
+            WHERE url = ? AND timestamp > datetime('now', '-' || ? || ' hours')
+            ORDER BY timestamp DESC
+        ''', (url, hours))
+        
+        checks = cursor.fetchall()
+        conn.close()
+        
+        return checks if checks else []
+
+    def add_check_history(self, url: str, check_data: dict):
+        """Add a check result to history"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO website_checks 
+            (url, timestamp, status_code, response_time, error_message)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            url,
+            check_data['timestamp'],
+            check_data['status_code'],
+            check_data['response_time'],
+            check_data.get('technical_details', '')
+        ))
+        
+        conn.commit()
+        conn.close()
+
+    def get_site_status_history(self, url: str, hours: int = 24):
+        """Get site status history for the last X hours"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT timestamp, status_code, response_time, error_message
+            FROM website_checks
+            WHERE url = ? AND timestamp > datetime('now', '-' || ? || ' hours')
+            ORDER BY timestamp DESC
+        ''', (url, hours))
+        
+        history = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'timestamp': row[0],
+            'status_code': row[1],
+            'response_time': row[2],
+            'error_message': row[3]
+        } for row in history]

@@ -5,15 +5,27 @@ services:
     build: .
     environment:
       - DATA_DIR=/app/data
+      - DISPLAY=:99
+      - PYTHONUNBUFFERED=1
       - WDM_LOCAL=1
       - WDM_CACHE_DIR=/app/.wdm
     volumes:
       - website_data:/app/data
       - website_screenshots:/app/screenshots
-      - website_wdm:/app/.wdm
-    user: "1000:1000"
+      - website_cache:/app/.wdm
+      - /dev/shm:/dev/shm
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   website_data:
   website_screenshots:
-  website_wdm:
+  website_cache:
