@@ -13,6 +13,8 @@ from collections import Counter
 # Load environment variables
 load_dotenv()
 
+
+CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID', 0))
 # Bot setup with increased timeout
 intents = discord.Intents.default()
 intents.message_content = True
@@ -41,16 +43,16 @@ def format_timedelta(td):
         return f"{hours} hours ago"
     days = hours // 24
     return f"{days} days ago"
-DEFAULT_CHECK_INTERVAL = 0.5  # Changed to 30 seconds default
+DEFAULT_CHECK_INTERVAL = 30  # 30 minutes default
 REPORT_HOUR = 5  # UTC time
 REPORT_COLOR = discord.Color.gold()
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
-    check_websites.change_interval(seconds=30)  # Change to 30 seconds
+    print("Starting website monitoring...")
     check_websites.start()
-    daily_report.start()  # Start the daily report task
+    daily_report.start()
 
 async def send_paginated_embeds(ctx, title: str, items: list, formatter):
     """Send paginated embeds for large datasets"""
@@ -94,26 +96,32 @@ async def send_paginated_embeds(ctx, title: str, items: list, formatter):
 @bot.command(name='add', help='Add a website to monitor.\nUsage: bito add <url> [check_interval_in_minutes]\nNote: Full page screenshots will be captured')
 @commands.guild_only()
 async def add_website(ctx, url: str = commands.parameter(description="Website URL to monitor"), 
-                     interval: Optional[int] = commands.parameter(default=0.5, description="Check interval in minutes")):
+                     interval: Optional[int] = commands.parameter(default=30, description="Check interval in minutes")):
     if not url:
-        await ctx.send("Please provide a URL to monitor. Usage: !add <url> [check_interval_in_minutes]")
+        await ctx.send("Please provide a URL to monitor. Usage: bito add <url> [check_interval_in_minutes]")
         return
+    
+    # Ensure minimum interval is 5 minutes
+    if interval is None or interval < 5:
+        interval = 5
+        await ctx.send("⚠️ Minimum check interval is 5 minutes. Setting to 5 minutes.")
     
     async with ctx.typing():
         try:
             # Perform initial thorough check
-            status = monitor.initial_check_website(url)  # New method for thorough initial check
+            status = monitor.initial_check_website(url)
             
             # Add website with specified interval
             monitor.add_website(url, interval)
             
             # Create response embed
             embed = discord.Embed(
-                title="Website Added Successfully",
+                title="✅ Website Added Successfully",
                 description=f"Now monitoring: {url}",
                 color=EMBED_COLOR_SUCCESS
             )
-            embed.add_field(name="Check Interval", value=f"{interval} minutes", inline=False)
+            embed.add_field(name="Check Interval", value=f"Every {interval} minutes", inline=True)
+            embed.add_field(name="Next Check", value="Within 5 minutes", inline=True)
             embed.add_field(name="Initial Status", value="✅ Initial check completed", inline=False)
             
             if status.get('technical_details'):
@@ -123,7 +131,7 @@ async def add_website(ctx, url: str = commands.parameter(description="Website UR
             
         except Exception as e:
             embed = discord.Embed(
-                title="Error Adding Website",
+                title="❌ Error Adding Website",
                 description=str(e),
                 color=EMBED_COLOR_ERROR
             )
@@ -293,48 +301,83 @@ async def notify_admins(channel, message, error=False):
             mention = f"<@{admin['admin_id']}>"
             await channel.send(f"{mention} {message}")
 
-@tasks.loop(seconds=30)  # Changed from minutes=30 to seconds=30
+@tasks.loop(minutes=5)  # Check every 5 minutes to see if any websites need checking
 async def check_websites():
-    """Silent check of all websites with immediate alerts for anomalies"""
-    channel_id = int(os.getenv('DISCORD_CHANNEL_ID'))
-    channel = bot.get_channel(channel_id)
-    
-    if not channel:
-        return  # Silent return if channel not found
+    """Check websites based on their individual intervals and report issues"""
+    channel = bot.get_channel(CHANNEL_ID)
+
+    if not channel or not isinstance(channel, discord.TextChannel):
+        print("Channel not found or is not a text channel, skipping checks")
+        return
 
     try:
+        print("Starting website checks...")
         anomalies = monitor.check_all_websites()
+        
         for anomaly in anomalies:
-            if anomaly.get('critical_changes', False):  # Only alert for critical changes
+            url = anomaly['url']
+            current_status = anomaly['current_status']
+            issues = anomaly['issues']
+            
+            # Determine severity
+            status_code = current_status.get('status_code', 0)
+            consecutive_failures = current_status.get('consecutive_failures', 0)
+            
+            if status_code >= 500 or consecutive_failures >= 3:
+                # Critical issue
                 embed = discord.Embed(
-                    title="🚨 Critical Website Change Detected",
-                    description=f"Important changes detected on {anomaly['url']}",
-                    color=EMBED_COLOR_ERROR,
+                    title="🚨 Critical Website Issue",
+                    description=f"**{url}** is experiencing critical issues",
+                    color=discord.Color.red(),
                     timestamp=datetime.now()
                 )
+                embed.add_field(name="Status Code", value=str(status_code) if status_code > 0 else "Connection Failed", inline=True)
+                embed.add_field(name="Consecutive Failures", value=str(consecutive_failures), inline=True)
+                embed.add_field(name="Response Time", value=f"{current_status.get('response_time', 0):.2f}s", inline=True)
                 
-                # Add critical changes first
-                critical_issues = []
-                if anomaly.get('status_code_error'):
-                    critical_issues.append("❌ Website Down/Error")
-                if anomaly.get('dns_changed'):
-                    critical_issues.append("🔄 DNS Records Changed")
-                if anomaly.get('ip_changed'):
-                    critical_issues.append("🌐 IP Address Changed")
+            elif status_code >= 400:
+                # Warning issue
+                embed = discord.Embed(
+                    title="⚠️ Website Warning",
+                    description=f"**{url}** has issues that need attention",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="Status Code", value=str(status_code), inline=True)
+                embed.add_field(name="Response Time", value=f"{current_status.get('response_time', 0):.2f}s", inline=True)
                 
-                if critical_issues:
-                    embed.add_field(name="Critical Issues", value="\n".join(critical_issues), inline=False)
-                    
-                if anomaly.get('technical_details'):
-                    embed.add_field(name="Technical Details", value=anomaly['technical_details'], inline=False)
-                
-                # Send alert to admins
-                await channel.send(embed=embed)
-                await notify_admins(channel, f"⚠️ Critical changes detected for {anomaly['url']}")
+            else:
+                # Info issue (like IP change)
+                embed = discord.Embed(
+                    title="ℹ️ Website Change Detected",
+                    description=f"**{url}** has detected changes",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.now()
+                )
+            
+            # Add issues description
+            embed.add_field(name="Issues Detected", value=issues, inline=False)
+            
+            # Add technical details if available
+            if current_status.get('error_message'):
+                embed.add_field(name="Error Details", value=current_status['error_message'], inline=False)
+            
+            await channel.send(embed=embed)
+            
+            # Notify admins for critical issues
+            if status_code >= 500 or consecutive_failures >= 3:
+                await notify_admins(channel, f"🚨 Critical issue detected for {url}")
 
     except Exception as e:
-        # Only notify admins of monitoring system errors
-        await notify_admins(channel, f"🔥 Monitoring system error: {str(e)}", error=True)
+        error_msg = f"❌ Monitoring system error: {str(e)}"
+        print(error_msg)
+        await channel.send(error_msg)
+        await notify_admins(channel, error_msg, error=True)
+
+@check_websites.before_loop
+async def before_check_websites():
+    await bot.wait_until_ready()
+    print("Website monitoring started - checking every 5 minutes")
 
 async def generate_daily_report():
     """Generate a comprehensive daily report of all websites"""
@@ -409,13 +452,15 @@ async def generate_daily_report():
 @tasks.loop(hours=24)
 async def daily_report():
     """Send daily report at specified UTC time"""
-    channel_id = int(os.getenv('DISCORD_CHANNEL_ID'))
+    channel_id = int(os.getenv('DISCORD_CHANNEL_ID', '0'))
     channel = bot.get_channel(channel_id)
     
-    if channel:
+    if channel and isinstance(channel, discord.TextChannel):
         report_embed = await generate_daily_report()
         await channel.send("📬 Daily Website Monitoring Report", embed=report_embed)
         await notify_admins(channel, "Daily monitoring report is available.")
+    else:
+        print("Channel not found or is not a text channel, skipping daily report")
 
 @daily_report.before_loop
 async def before_daily_report():
@@ -450,4 +495,7 @@ async def bito(ctx):
     await ctx.send(embed=embed)
 
 # Run the bot
-bot.run(os.getenv('DISCORD_TOKEN'))
+token = os.getenv('DISCORD_TOKEN')
+if not token:
+    raise ValueError("DISCORD_TOKEN environment variable is not set")
+bot.run(token)

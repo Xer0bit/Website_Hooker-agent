@@ -25,14 +25,39 @@ class Database:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS websites (
                     url TEXT PRIMARY KEY,
-                    interval INTEGER,
+                    interval INTEGER DEFAULT 30,
                     last_check TEXT,
                     last_hash TEXT,
                     ip TEXT,
                     dns TEXT,
-                    screenshot_path TEXT
+                    screenshot_path TEXT,
+                    status_code INTEGER DEFAULT 0,
+                    response_time REAL DEFAULT 0,
+                    last_error TEXT,
+                    consecutive_failures INTEGER DEFAULT 0
                 )
             ''')
+            
+            # Add missing columns if they don't exist
+            try:
+                cursor.execute('ALTER TABLE websites ADD COLUMN status_code INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute('ALTER TABLE websites ADD COLUMN response_time REAL DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute('ALTER TABLE websites ADD COLUMN last_error TEXT')
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute('ALTER TABLE websites ADD COLUMN consecutive_failures INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass
             
             # Create admin_config table
             cursor.execute('''
@@ -138,7 +163,8 @@ class Database:
         
         cursor.execute('''
             UPDATE websites 
-            SET last_check = ?, last_hash = ?, ip = ?, dns = ?, screenshot_path = ?
+            SET last_check = ?, last_hash = ?, ip = ?, dns = ?, screenshot_path = ?,
+                status_code = ?, response_time = ?, last_error = ?, consecutive_failures = ?
             WHERE url = ?
         ''', (
             status['timestamp'],
@@ -146,6 +172,10 @@ class Database:
             status['ip'],
             status['dns'],
             status['screenshot_path'],
+            status.get('status_code', 0),
+            status.get('response_time', 0),
+            status.get('error_message', ''),
+            status.get('consecutive_failures', 0),
             url
         ))
         

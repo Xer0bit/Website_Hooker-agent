@@ -104,36 +104,6 @@ class WebsiteMonitor:
                 'error_type': 'check_error'
             }
 
-    def check_all_websites(self):
-        """Enhanced periodic check of all websites"""
-        anomalies = []
-        try:
-            websites = self.get_all_websites()
-            for website in websites:
-                if self._should_check(website):
-                    current_status = self._check_website(website['url'])
-                    stored_status = self.db.get_website_status(website['url'])
-
-                    # Detect changes
-                    changes = self._detect_changes(stored_status or {}, current_status)
-                    
-                    # Update database
-                    self.db.update_website_status(website['url'], current_status)
-                    
-                    # Report critical changes
-                    if changes.get('critical_changes'):
-                        anomalies.append({
-                            'url': website['url'],
-                            **changes,
-                            'current_status': current_status,
-                            'previous_status': stored_status
-                        })
-
-        except Exception as e:
-            print(f"Error in check_all_websites: {str(e)}")
-
-        return anomalies
-    
     def _check_website(self, url: str):
         """Enhanced website check with failure tracking"""
         try:
@@ -266,8 +236,8 @@ class WebsiteMonitor:
                 last_check = pytz.UTC.localize(last_check)
             now = datetime.now(pytz.UTC)
             elapsed = (now - last_check).total_seconds() / 60
-            # Always check at least every 30 seconds (0.5 minutes)
-            interval = min(website.get('interval', 0.5), 0.5)
+            # Use the website's configured interval (default 30 minutes)
+            interval = website.get('interval', 30)
             return elapsed >= interval
         except Exception:
             return True  # Check if there's an error parsing time
@@ -294,14 +264,14 @@ class WebsiteMonitor:
         }
 
         # Check for critical changes first
-        if hasattr(self, 'last_status_code'):
-            if self.last_status_code >= 500:
-                changes['status_code_error'] = True
-                changes['critical_changes'] = True
-                changes['technical_details'].append(f"⚠️ Server Error (HTTP {self.last_status_code})")
-            elif self.last_status_code >= 400:
-                changes['status_code_error'] = True
-                changes['technical_details'].append(f"Warning: Client Error (HTTP {self.last_status_code})")
+        current_status_code = new_status.get('status_code', 0)
+        if current_status_code >= 500:
+            changes['status_code_error'] = True
+            changes['critical_changes'] = True
+            changes['technical_details'].append(f"⚠️ Server Error (HTTP {current_status_code})")
+        elif current_status_code >= 400:
+            changes['status_code_error'] = True
+            changes['technical_details'].append(f"Warning: Client Error (HTTP {current_status_code})")
 
         # Check IP changes
         if website.get('ip') != new_status.get('ip'):
@@ -509,7 +479,7 @@ class WebsiteMonitor:
             # Get MX records
             try:
                 mx_records = dns.resolver.resolve(domain, 'MX')
-                dns_info.extend([f"MX: {str(record.exchange)}" for record in mx_records])
+                dns_info.extend([f"MX: {str(record)}" for record in mx_records])
             except Exception:
                 pass
 
@@ -540,3 +510,76 @@ class WebsiteMonitor:
             self.db.add_check_history(url, check_data)
         except Exception as e:
             print(f"Error updating check history: {str(e)}")
+
+    def check_all_websites(self):
+        """Enhanced periodic check of all websites with proper interval checking"""
+        anomalies = []
+        try:
+            websites = self.get_all_websites()
+            print(f"Checking {len(websites)} websites...")
+            
+            for website in websites:
+                if self._should_check(website):
+                    print(f"Checking website: {website['url']}")
+                    current_status = self._check_website(website['url'])
+                    stored_status = self.db.get_website_status(website['url'])
+
+                    # Detect changes and issues
+                    has_issues = self._detect_issues(stored_status or {}, current_status)
+                    
+                    # Update database with new status
+                    current_status['last_hash'] = self._get_page_hash(current_status.get('content', ''))
+                    self.db.update_website_status(website['url'], current_status)
+                    
+                    # Report issues
+                    if has_issues:
+                        anomalies.append({
+                            'url': website['url'],
+                            'current_status': current_status,
+                            'previous_status': stored_status,
+                            'issues': self._get_issue_description(current_status)
+                        })
+                        print(f"Issues detected for {website['url']}: {current_status.get('error_message', 'Unknown issue')}")
+
+        except Exception as e:
+            print(f"Error in check_all_websites: {str(e)}")
+
+        return anomalies
+
+    def _detect_issues(self, previous_status, current_status):
+        """Detect if there are issues with the website"""
+        issues = []
+        
+        # Check for HTTP errors
+        status_code = current_status.get('status_code', 0)
+        if status_code >= 400:
+            issues.append(f"HTTP Error: {status_code}")
+        
+        # Check for connection errors
+        if current_status.get('error_message'):
+            issues.append(f"Connection Error: {current_status['error_message']}")
+        
+        # Check for high response time
+        response_time = current_status.get('response_time', 0)
+        if response_time > 10:  # More than 10 seconds
+            issues.append(f"Slow Response: {response_time:.2f}s")
+        
+        # Check for consecutive failures
+        consecutive_failures = current_status.get('consecutive_failures', 0)
+        if consecutive_failures >= 3:
+            issues.append(f"Multiple Failures: {consecutive_failures} consecutive")
+        
+        # Check for IP changes (if we have previous data)
+        if previous_status and previous_status.get('ip') != current_status.get('ip'):
+            if previous_status.get('ip') != 'Unknown' and current_status.get('ip') != 'Unknown':
+                issues.append(f"IP Changed: {previous_status.get('ip')} → {current_status.get('ip')}")
+        
+        current_status['issues'] = issues
+        return len(issues) > 0
+
+    def _get_issue_description(self, status):
+        """Get a formatted description of issues"""
+        issues = status.get('issues', [])
+        if not issues:
+            return "No issues detected"
+        return "\n".join(f"• {issue}" for issue in issues)
